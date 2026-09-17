@@ -174,7 +174,7 @@
 <body>
 
 <div class="err-banner" id="err-banner"></div>
-<div class="map-attrib">Tiles © <a href="https://www.esri.com" target="_blank" rel="noopener">Esri</a> — Esri, HERE, Garmin, FAO, NOAA, USGS</div>
+<div class="map-attrib">Wikimedia maps | Mapa © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
 <div id="map"></div>
 
 <div class="topbar">
@@ -320,11 +320,11 @@
   <div class="field-group">
     <label class="field-label">Cor das curvas (grau de fecho)</label>
     <div class="curve-legend">
-      <div style="background:hsl(212,85%,50%)"></div><div style="background:hsl(178,85%,50%)"></div>
-      <div style="background:hsl(48,85%,50%)"></div><div style="background:hsl(24,85%,50%)"></div>
-      <div style="background:hsl(0,85%,50%);box-shadow:inset 0 0 0 2px #000"></div>
+      <div style="background:#2563EB"></div><div style="background:#16A34A"></div>
+      <div style="background:#FACC15"></div><div style="background:#F97316"></div>
+      <div style="background:#DC2626;box-shadow:inset 0 0 0 2px #000"></div>
     </div>
-    <div class="curve-legend-labels"><span>Ligeira</span><span>Fechada</span></div>
+    <div class="curve-legend-labels"><span>Leve</span><span>Em cotovelo</span></div>
   </div>
 
   <div class="field-group">
@@ -398,12 +398,14 @@
 
   var map = L.map("map", { zoomControl: false, attributionControl: false, preferCanvas: true, rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false }).setView([38.7223, -9.1393], 15);
   var mapCanRotate = !window.__rotateFailed && typeof map.setBearing === "function";
-  // Esri (ArcGIS Online) — mapa base gratuito, sem chave de API necessária. Reaproveita o truque de filtro
-  // CSS para o modo escuro (mais robusto do que depender de um "estilo escuro" nativo de um fornecedor
-  // gratuito específico — já fomos apanhados duas vezes por fornecedores a mudar as regras).
-  var tileLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+  // Mapas da Wikimedia — mesma base de dados OpenStreetMap, mas com o estilo detalhado (edifícios,
+  // vegetação, zonas industriais/residenciais bem distintas), sem chave de API. Infraestrutura separada
+  // do tile.openstreetmap.org que nos bloqueou, por isso o bloqueio anterior não afeta este.
+  // O modo escuro continua a usar o truque de filtro CSS (mais robusto do que depender de um estilo
+  // escuro nativo de um fornecedor gratuito específico — já fomos apanhados duas vezes com isso).
+  var tileLayer = L.tileLayer("https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}{r}.png", {
     maxZoom: 19, updateWhenZooming: false, keepBuffer: 4,
-    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, FAO, NOAA, USGS'
+    attribution: 'Wikimedia maps | Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
   }).addTo(map);
   function updateTileStyle(mode){ /* estilo único — a diferença clara/escuro é feita por CSS, ver .leaflet-tile-pane */ }
 
@@ -465,19 +467,18 @@
   }
   // bandas de severidade — usadas tanto na cor como na voz, para ficarem sempre coerentes
   var CURVE_BANDS = [
-    { max: 20,  label: "leve",             hue: 212 }, // azul
-    { max: 50,  label: "moderada",         hue: 178 }, // ciano
-    { max: 90,  label: "acentuada",        hue: 48  }, // amarelo
-    { max: 160, label: "muito acentuada",  hue: 24  }, // laranja
-    { max: Infinity, label: "em cotovelo", hue: 0   }  // vermelho — destaca-se ainda mais com contorno preto
+    { max: 20,  label: "leve",             color: "#2563EB" }, // azul
+    { max: 50,  label: "moderada",         color: "#16A34A" }, // verde
+    { max: 90,  label: "acentuada",        color: "#FACC15" }, // amarelo
+    { max: 160, label: "muito acentuada",  color: "#F97316" }, // laranja
+    { max: Infinity, label: "em cotovelo", color: "#DC2626" }  // vermelho — destaca-se ainda mais com contorno preto
   ];
   function curveBand(angle){
     for (var i=0;i<CURVE_BANDS.length;i++) if (angle < CURVE_BANDS[i].max) return CURVE_BANDS[i];
     return CURVE_BANDS[CURVE_BANDS.length-1];
   }
   function angleToColor(angle){
-    var b = curveBand(angle);
-    return "hsl(" + b.hue + ",85%,50%)";
+    return curveBand(angle).color;
   }
 
   var toastTimer = null;
@@ -771,11 +772,12 @@
     document.getElementById("search-chip").classList.add("has-route");
     document.getElementById("search-label").textContent = label;
     var tollTxt = "";
-    if (tollInfo && tollInfo.amount > 0) tollTxt = " · ~€" + tollInfo.amount.toFixed(2) + " portagem";
-    else if (tollInfo) tollTxt = " · sem portagens";
+    // só mostra valor de portagem se tiveres mesmo escolhido "Com portagens" — com "Sem", ou já evitámos
+    // (nada a mostrar) ou não conseguimos ter confiança suficiente no valor para o apresentar como certo
+    if (settings.tollPref === "with" && tollInfo && tollInfo.amount > 0) tollTxt = " · ~€" + tollInfo.amount.toFixed(2) + " portagem";
     document.getElementById("search-sub").textContent = sub + tollTxt;
     if (lastLatLng) updateRouteHud(routeMeta.cum[findNearestIndex(lastLatLng)]);
-    var tollSpoken = tollInfo && tollInfo.amount > 0 ? (" Portagem estimada de cerca de " + tollInfo.amount.toFixed(2).replace(".", " vírgula ") + " euros.") : "";
+    var tollSpoken = (settings.tollPref === "with" && tollInfo && tollInfo.amount > 0) ? (" Portagem estimada de cerca de " + tollInfo.amount.toFixed(2).replace(".", " vírgula ") + " euros.") : "";
     speak((spokenExtra ? spokenExtra + " " : "") + "Rota calculada. " + fmtDist(info.distance) + ", tempo estimado " + fmtDur(info.duration) + "." + tollSpoken);
     rerouting = false; offRouteStrikes = 0;
   }
