@@ -838,24 +838,39 @@
     if (mode !== "curvy" && mode !== "curvy_tight"){
       fetchRouteRaw([origin, dest]).then(function(r){
         if (!r){ toast("Não foi possível calcular a rota."); clearRoute(); return; }
-        var tollInfo = estimateToll(r);
-        if (settings.tollPref === "without" && tollInfo && tollInfo.amount > 0){
-          toast("A tentar evitar portagens…", 4500);
-          findTollFreeRoute(origin, dest, r).then(function(alt){
-            var chosen = r, chosenToll = tollInfo, extra = "";
-            if (alt && alt.toll.km < tollInfo.km - 0.05){
-              chosen = alt.route; chosenToll = alt.toll;
-              extra = chosenToll.amount > 0 ? "Reduzi a portagem ao máximo que consegui." : "Rota sem portagens encontrada.";
-            } else {
-              extra = "Não consegui evitar esta portagem sem um desvio grande demais — mantive a rota direta.";
-            }
-            var coords = chosen.geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
-            finishRoute(coords, { distance: chosen.distance, duration: chosen.duration }, label, fmtDist(chosen.distance) + " · " + fmtDur(chosen.duration), extra, chosenToll, chosen);
-          });
+        function continueWith(r, spikeWarning){
+          var tollInfo = estimateToll(r);
+          if (settings.tollPref === "without" && tollInfo && tollInfo.amount > 0){
+            toast("A tentar evitar portagens…", 4500);
+            findTollFreeRoute(origin, dest, r).then(function(alt){
+              var chosen = r, chosenToll = tollInfo, extra = spikeWarning || "";
+              if (alt && alt.toll.km < tollInfo.km - 0.05){
+                chosen = alt.route; chosenToll = alt.toll;
+                extra = (extra ? extra + " " : "") + (chosenToll.amount > 0 ? "Reduzi a portagem ao máximo que consegui." : "Rota sem portagens encontrada.");
+              } else {
+                extra = (extra ? extra + " " : "") + "Não consegui evitar esta portagem sem um desvio grande demais — mantive a rota direta.";
+              }
+              var coords = chosen.geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
+              finishRoute(coords, { distance: chosen.distance, duration: chosen.duration }, label, fmtDist(chosen.distance) + " · " + fmtDur(chosen.duration), extra, chosenToll, chosen);
+            });
+            return;
+          }
+          var coords = r.geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
+          finishRoute(coords, { distance: r.distance, duration: r.duration }, label, fmtDist(r.distance) + " · " + fmtDur(r.duration), spikeWarning || "", tollInfo, r);
+        }
+        var baseCoords = r.geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
+        if (hasBacktrackSpike(baseCoords)){
+          // a rota "mais rápida" da OSRM tem um troço em pico (ida e volta sem sentido) — tenta uma alternativa
+          var url = "https://router.project-osrm.org/route/v1/driving/" + origin[1] + "," + origin[0] + ";" + dest[1] + "," + dest[0] + "?overview=full&geometries=geojson&steps=true&alternatives=true";
+          fetch(url).then(function(resp){ return resp.json(); }).then(function(data){
+            var routes = (data.routes||[]);
+            var clean = routes.find(function(rt){ return !hasBacktrackSpike(rt.geometry.coordinates.map(function(c){ return [c[1],c[0]]; })); });
+            if (clean) continueWith(clean, "");
+            else continueWith(r, "Este trajeto tem um troço que parece ir e voltar pelo mesmo sítio — pode ser um erro nos dados do mapa, não encontrei alternativa.");
+          }).catch(function(){ continueWith(r, "Este trajeto tem um troço que parece ir e voltar pelo mesmo sítio — pode ser um erro nos dados do mapa."); });
           return;
         }
-        var coords = r.geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
-        finishRoute(coords, { distance: r.distance, duration: r.duration }, label, fmtDist(r.distance) + " · " + fmtDur(r.duration), "", tollInfo, r);
+        continueWith(r, "");
       }).catch(function(){ toast("Erro ao calcular a rota. Verifica a ligação à internet."); document.getElementById("search-label").textContent = "Para onde vamos?"; });
       return;
     }
@@ -1057,6 +1072,41 @@
     return fetch(url).then(function(r){ return r.json(); });
   }
 
+  /* ---------- Pesquisa por marca (combustível/supermercados) — usa o Overpass, mais fiável do que
+     texto livre para "encontra-me a X mais perto", porque procura diretamente pelo nome da marca em
+     postos/lojas mapeados como tal, dentro da área visível do mapa. ---------- */
+  var KNOWN_BRANDS = [
+    "galp","bp","repsol","cepsa","prio","q8","auchan","intermarché","intermarche",
+    "continente","pingo doce","lidl","mercadona","minipreço","minipreco","aldi","e.leclerc","leclerc",
+    "meu super","spar","froiz","jumbo","makro","worten","decathlon","ikea","staples","fnac"
+  ];
+  function matchedBrand(q){
+    var ql = q.trim().toLowerCase();
+    if (ql.length < 3) return null;
+    return KNOWN_BRANDS.find(function(b){ return b.indexOf(ql) === 0 || ql.indexOf(b) === 0; }) || null;
+  }
+  function searchBrandNearby(brand){
+    var c = map.getCenter(), d = 0.15;
+    var bbox = (c.lat-d) + "," + (c.lng-d) + "," + (c.lat+d) + "," + (c.lng+d);
+    var esc = brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var q = "[out:json][timeout:20];(" +
+      "node[\"name\"~\"" + esc + "\",i](" + bbox + ");" +
+      "way[\"name\"~\"" + esc + "\",i](" + bbox + ");" +
+      ");out center 20;";
+    return fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: "data=" + encodeURIComponent(q) })
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        return (data.elements||[]).map(function(el){
+          var lat = el.lat || (el.center && el.center.lat);
+          var lon = el.lon || (el.center && el.center.lon);
+          if (!lat || !lon) return null;
+          var nm = (el.tags && el.tags.name) || brand;
+          var addr = el.tags && (el.tags["addr:street"] || el.tags["addr:city"]) || "";
+          return { lat: lat, lon: lon, name: nm, display_name: nm + (addr ? ", " + addr : "") };
+        }).filter(function(x){ return x; });
+      });
+  }
+
   /* ---------- Importar rota do Google Maps ---------- */
   function geocodeOne(q){
     return searchFreeText(q).then(function(items){
@@ -1101,10 +1151,18 @@
     clearTimeout(searchDebounce);
     document.querySelectorAll("#poi-chips button").forEach(function(b){ b.classList.remove("active"); });
     if (q.length<3){ resultsEl.innerHTML = '<div class="search-hint">Escreve para pesquisar um destino, ou usa uma categoria acima</div>'; return; }
-    resultsEl.innerHTML = '<div class="search-hint">A pesquisar…</div>';
+    var brand = matchedBrand(q);
+    resultsEl.innerHTML = '<div class="search-hint">' + (brand ? "A procurar perto de ti…" : "A pesquisar…") + '</div>';
     searchDebounce = setTimeout(function(){
-      searchFreeText(q).then(function(items){ renderResults(items, "Sem resultados"); })
-        .catch(function(){ resultsEl.innerHTML = '<div class="search-hint">Erro na pesquisa — verifica a ligação à internet</div>'; });
+      if (brand){
+        searchBrandNearby(brand).then(function(items){
+          if (!items.length){ searchFreeText(q).then(function(fb){ renderResults(fb, "Sem resultados"); }); return; }
+          renderResults(items, "Sem resultados");
+        }).catch(function(){ searchFreeText(q).then(function(fb){ renderResults(fb, "Sem resultados"); }); });
+      } else {
+        searchFreeText(q).then(function(items){ renderResults(items, "Sem resultados"); })
+          .catch(function(){ resultsEl.innerHTML = '<div class="search-hint">Erro na pesquisa — verifica a ligação à internet</div>'; });
+      }
     }, 450);
   });
 
