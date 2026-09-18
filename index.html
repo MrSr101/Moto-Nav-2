@@ -174,7 +174,7 @@
 <body>
 
 <div class="err-banner" id="err-banner"></div>
-<div class="map-attrib">Wikimedia maps | Mapa © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
+<div class="map-attrib">Tiles © <a href="https://www.esri.com" target="_blank" rel="noopener">Esri</a> — Esri, HERE, Garmin, FAO, NOAA, USGS</div>
 <div id="map"></div>
 
 <div class="topbar">
@@ -398,15 +398,27 @@
 
   var map = L.map("map", { zoomControl: false, attributionControl: false, preferCanvas: true, rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false }).setView([38.7223, -9.1393], 15);
   var mapCanRotate = !window.__rotateFailed && typeof map.setBearing === "function";
-  // Mapas da Wikimedia — mesma base de dados OpenStreetMap, mas com o estilo detalhado (edifícios,
-  // vegetação, zonas industriais/residenciais bem distintas), sem chave de API. Infraestrutura separada
-  // do tile.openstreetmap.org que nos bloqueou, por isso o bloqueio anterior não afeta este.
-  // O modo escuro continua a usar o truque de filtro CSS (mais robusto do que depender de um estilo
-  // escuro nativo de um fornecedor gratuito específico — já fomos apanhados duas vezes com isso).
-  var tileLayer = L.tileLayer("https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}{r}.png", {
+  // Esri — confirmado que funciona sem chave de API (a Wikimedia, tentada antes, bloqueia pedidos de
+  // fora dos próprios sites deles). Menos detalhe visual do que o OSM tinha, mas fiável.
+  // O modo escuro usa o truque de filtro CSS.
+  var ESRI_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+  var OSM_FALLBACK_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  var tileLayer = L.tileLayer(ESRI_URL, {
     maxZoom: 19, updateWhenZooming: false, keepBuffer: 4,
-    attribution: 'Wikimedia maps | Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, FAO, NOAA, USGS'
   }).addTo(map);
+  // Rede de segurança: se o fornecedor principal falhar muito (ficar tudo em branco outra vez),
+  // troca sozinho para um alternativo, sem precisares de me avisar.
+  var tileErrorCount = 0, tileFallbackDone = false;
+  tileLayer.on("tileerror", function(){
+    tileErrorCount++;
+    if (!tileFallbackDone && tileErrorCount > 6){
+      tileFallbackDone = true;
+      tileLayer.setUrl(OSM_FALLBACK_URL);
+      tileLayer.options.subdomains = "abc";
+      toast("Mapa: a trocar para fornecedor alternativo…", 4000);
+    }
+  });
   function updateTileStyle(mode){ /* estilo único — a diferença clara/escuro é feita por CSS, ver .leaflet-tile-pane */ }
 
   var followMode = true, followResumeTimer = null;
